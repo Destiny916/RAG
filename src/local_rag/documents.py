@@ -1,5 +1,6 @@
 import os
 import re
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,7 @@ from markdown_it import MarkdownIt
 
 CHUNK_CHARS = 480
 BLOCK_CHARS = 1200
+DOCUMENT_KINDS = ("guide", "version", "site")
 _MARKDOWN_LINK = re.compile(r"(?<=\])\([^\s()]+\)")
 
 
@@ -112,6 +114,39 @@ def split_document(source: str, text: str) -> Iterator[Chunk]:
 
 def _raise_walk_error(error: OSError) -> None:
     raise error
+
+
+def read_kind_rules(root: Path) -> dict[str, str]:
+    path = root / ".rag-kinds.toml"
+    if not path.exists():
+        return {}
+    if path.is_symlink():
+        raise ValueError(f"document kind rules must not be a symbolic link: {path}")
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+    rules = config.get("kinds", {})
+    if config.keys() - {"kinds"} or not isinstance(rules, dict):
+        raise ValueError(f"expected a [kinds] table in {path}")
+    for source, kind in rules.items():
+        if (any(part in {"", ".", ".."} for part in source.split("/"))
+                or "\\" in source or kind not in DOCUMENT_KINDS):
+            raise ValueError(f"invalid document kind rule for {source!r} in {path}")
+    return rules
+
+
+def document_kind(source: str, rules: dict[str, str]) -> str:
+    # Explicit file rules take precedence over the nearest parent directory rule.
+    path = source
+    while path:
+        if path in rules:
+            return rules[path]
+        path = path.rpartition("/")[0]
+    directories = source.split("/")[:-1]
+    if "site_records" in directories:
+        return "site"
+    if "version_snapshots" in directories:
+        return "version"
+    return "guide"
 
 
 def read_chunks(root: Path) -> Iterator[Chunk]:

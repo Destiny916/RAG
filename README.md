@@ -29,7 +29,9 @@ rag search --index ./.rag/project.sqlite --scope embodichain \
 
 把 `--input` 改为实际资料目录。支持 UTF-8 的 Markdown 和 TXT，递归导入，跳过隐藏路径和符号链接。Markdown 片段保留标题层级，尽量保留完整的命令块和参数表。文件增删、改名或修改后重跑 `rag index`：同一模型下复用未变片段的向量，重新生成全文索引和引用行号，新库构建成功后才替换旧库。从旧版升级时也要先运行一次建索引命令。`knowledge/` 和 `.rag/` 默认在 Git 中忽略；索引包含资料原文。
 
-`rag status` 显示索引版本、文件和片段数及顶层范围。`--scope` 接受相对资料根目录的目录或文件，例如 `openpi05/docs` 或 `服务器.md`，省略则查整个索引。默认的 `--mode hybrid` 同时考虑语义和关键词，对命令、文件名、API 路径和参数名的精确匹配加权。只看文本匹配时可用 `--mode keyword`，无需加载模型；`--mode semantic` 只用向量。
+`rag status` 显示索引版本、文件与片段数、顶层范围和各类型的文档数。`--scope` 接受相对资料根目录的目录或文件，例如 `openpi05/docs`。省略范围时查所有项目下的所选类型。默认的 `--mode hybrid` 同时考虑语义和关键词，对命令、文件名、API 路径和参数名的精确匹配加权。只看文本匹配时可用 `--mode keyword`，无需加载模型；`--mode semantic` 只用向量。关键词与语义检索都先按范围和类型筛选，再排序。
+
+`--kind guide`（默认）查通用说明，`--kind version` 查版本或配置快照，`--kind site` 查现场记录与环境清单，`--kind all` 用于资料盘点。指定文件路径仍会应用类型筛选；例如服务器清单用 `--scope 服务器.md --kind site` 查询。
 
 `rag search --json` 在标准输出返回已按相关度排列的 JSON 数组。主要字段：
 
@@ -37,6 +39,7 @@ rag search --index ./.rag/project.sqlite --scope embodichain \
 | --- | --- |
 | `text` | 原文片段 |
 | `source` | 相对于导入目录的路径 |
+| `kind` | 文档类型：`guide`、`version` 或 `site` |
 | `title` | Markdown 小节标题，缺省时为 `null` |
 | `section` | 从文档标题到小节的路径，纯文本中可为空 |
 | `table_header` | 真正的 Markdown 表头（如果是独立表格片段），方便解释后续表格行 |
@@ -44,9 +47,11 @@ rag search --index ./.rag/project.sqlite --scope embodichain \
 | `score` | 当前模式的排序分；仅语义模式中是余弦相似度。不同模式的分值不可直接比较。 |
 | `semantic_score`、`keyword_rank` | 有相应匹配时返回，便于核对结果如何入选。 |
 
-空索引、范围内无资料或关键词无匹配时可返回 `[]`；缺少索引、问题为空等错误会返回非零退出码和标准错误。混合或语义检索可能返回最接近的候选，即使其中没有答案。Agent 应用 `text` 核对证据，必要时打开源文件补读，引用 `source:行号`，证据不足时明确说明。引用对应索引构建时的文件版本，修改资料后应重建索引。
+空索引、所选范围和类型下无文档、关键词无匹配时可返回 `[]`；缺少索引、问题为空等错误会返回非零退出码和标准错误。混合或语义检索可能返回词义接近但不能回答问题的候选。Agent 应核对片段是否支持结论，必要时补读原文；有依据才引用 `source:行号`。资料不足时可查实际源码、配置、官方文档或现场证据，并注明出处及仍待确认的部分。检索没有找到证据不等于该功能不存在，也不会自动新增资料。引用对应索引构建时的文件版本，修改资料后应重建索引。
 
-目前向量查询会扫描所选范围，每次混合或语义 CLI 查询会加载一次模型，适合本机小规模资料与低频调用。需要跨机器访问或连续大量查询时，可以复用同一检索函数作为常驻服务。
+Agent 可加 `--evidence --json`，查看 `status` 和 `matches`。有独立词项或完整技术标识符匹配时返回 `candidates`；词项支持不足时返回 `insufficient`。这是保守筛选，可能遗漏同义表达，可补读原文或调整查询。查询机器当前状态时加 `--intent live`，结果标为 `live_required`；片段可提供核对方法，不能证明当下状态。不加 `--evidence` 仍返回原始候选。
+
+同一范围、类型和模式下，重复传 `--query` 并加 `--json` 可以批量查，模型在该进程只加载一次，结果按输入顺序返回。不需要模型时用 `--mode keyword`。不同 CLI 进程仍各自加载模型。
 
 ## Codex 何时检索
 
@@ -54,7 +59,31 @@ rag search --index ./.rag/project.sqlite --scope embodichain \
 
 收录部署资料时，把协议、模型输入输出等约束，与主机地址、设备序列号、USB 路径、标定和初始姿态等现场值分开。换机说明记录需要重新测量什么；旧值保留为带版本和日期的现场记录，便于复现。
 
-如果以后接入 MCP，可以把同一检索函数暴露为 `search_project_docs(query, top_k)`，在工具描述中写明它能查的资料范围、适合调用的场景和返回的出处。Codex 连接后可根据工具描述和项目指令决定是否调用；注册工具本身不会保证每次都查。对必须检索的业务流程，由调用方先运行检索，再把结果交给模型。本仓库目前提供的是 CLI。
+新增文档默认视为 `guide`；放在 `version_snapshots/` 或 `site_records/` 下的文档分别视为 `version` 和 `site`。旧文档不便移动时，可在资料目录的 `.rag-kinds.toml` 的 `[kinds]` 下标注。键是相对路径；文件规则优先于最近的父目录规则。含现场实值的混合文档应标为 `site`，并另写可迁移的 `guide`。改完分类后重新建索引。
+
+```toml
+[kinds]
+"project/configs" = "version"
+"project/docs/previous-deployment.md" = "site"
+```
+
+如果以后接入 MCP，可以把同一检索函数暴露为 `search_project_docs(query, scope, kind, top_k)`，在工具描述中写明它能查的资料范围、适合调用的场景和返回的出处。Codex 连接后可根据工具描述和项目指令决定是否调用；注册工具本身不会保证每次都查。对必须检索的业务流程，由调用方先运行检索，再把结果交给模型。本仓库目前提供的是 CLI。
+
+## Codex Stop 收录试点
+
+全局 `AGENTS.md` 让 Codex 在作答过程中根据当前上下文判断是否查库、是否有收录候选。有候选才核对现有知识并提交草稿。通用问答不自动加载 RAG，也无需保存跳过记录。
+
+用户级 Stop 默认放行。需要强制复核兜底的项目，可在本仓库的 `.rag/stop-workspaces.json` 中配置绝对目录列表，例如 `["/path/to/project"]`。列出的目录及其子目录最多触发一次续作；脚本不读取会话文件。该选项会让这些项目中的通用问题也走一次兜底复核。
+
+决定和草稿都保存在中央仓库的 `.rag/turn-reviews/`，不会被索引。查看待审事项、预览，以及用户明确批准后发布的命令如下：
+
+```bash
+.venv/bin/rag review list --state draft --state needs_content --state needs_review
+.venv/bin/rag review show <ID>
+HF_HUB_OFFLINE=1 .venv/bin/rag review approve <ID> --digest <预览摘要> --announce-to "$HOME/.codex/AGENTS.md"
+```
+
+`review list` 不筛选时也会显示已跳过、未完成、待发布、已发布和已拒绝。旧版只有摘要的草稿需补交完整正文；拒绝用 `review reject <ID>`。审批会检查草稿摘要和目标文件的原始内容。构建失败会恢复原知识文件；索引已构建而通知失败时，用同一审批命令重试。成功后全局 `AGENTS.md` 才公布本批入库记录。
 
 ## 测试
 

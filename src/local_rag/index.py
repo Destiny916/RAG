@@ -1,20 +1,22 @@
+import json
 import sqlite3
 from collections import Counter
 from contextlib import closing
 from dataclasses import asdict
 from hashlib import sha256
+from itertools import groupby
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
 
 import numpy as np
 
-from .documents import read_chunks, searchable_text
+from .documents import DOCUMENT_KINDS, document_kind, read_chunks, read_kind_rules, searchable_text
 from .embedding import Embedder
 from .lexical import match_expression, technical_terms, terms
 
 APPLICATION_ID = 0x52414731
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 VECTOR_DTYPE = np.dtype("<f4")
 SearchMode = Literal["hybrid", "keyword", "semantic"]
 RANK_OFFSET = 20
@@ -58,7 +60,8 @@ def _cached_embeddings(path: Path, embedder: Embedder) -> dict[bytes, bytes]:
         raise ValueError(f"index output is not a regular file: {path}")
     with closing(_connect_readonly(path)) as db:
         _check_index(db, path)
-        if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        # v3 adds source metadata without changing the embedding input or storage.
+        if db.execute("PRAGMA user_version").fetchone()[0] not in (2, SCHEMA_VERSION):
             return {}
         name, revision, dimension = db.execute("SELECT name, revision, dimension FROM model").fetchone()
         if (name, revision) != (embedder.model_id, embedder.revision):
@@ -69,7 +72,9 @@ def _cached_embeddings(path: Path, embedder: Embedder) -> dict[bytes, bytes]:
 
 def build_index(root: Path, path: Path, embedder: Embedder) -> dict:
     cache = _cached_embeddings(path, embedder)
+    rules = read_kind_rules(root)
     chunks = list(read_chunks(root))
+    kinds = {source: document_kind(source, rules) for source in {chunk.source for chunk in chunks}}
     keys, pending = [], {}
     for chunk in chunks:
         contents = chunk.embedding_text
@@ -99,14 +104,15 @@ def build_index(root: Path, path: Path, embedder: Embedder) -> dict:
                 embedder.model_id, embedder.revision, dimension,
             ))
             db.execute("""CREATE TABLE chunks (
-                id INTEGER PRIMARY KEY, source TEXT NOT NULL, title TEXT, section TEXT, table_header TEXT,
+                id INTEGER PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, title TEXT,
+                section TEXT, table_header TEXT,
                 start_line INTEGER NOT NULL, end_line INTEGER NOT NULL,
                 text TEXT NOT NULL, embedding_key BLOB NOT NULL, vector BLOB NOT NULL
             )""")
             db.executemany("""INSERT INTO chunks
-                (source, title, section, table_header, start_line, end_line, text, embedding_key, vector)
-                VALUES (:source, :title, :section, :table_header, :start_line, :end_line, :text, :key, :vector)""", (
-                {**asdict(chunk), "key": key, "vector": cache[key]}
+                (source, kind, title, section, table_header, start_line, end_line, text, embedding_key, vector)
+                VALUES (:source, :kind, :title, :section, :table_header, :start_line, :end_line, :text, :key, :vector)""", (
+                {**asdict(chunk), "kind": kinds[chunk.source], "key": key, "vector": cache[key]}
                 for chunk, key in zip(chunks, keys, strict=True)
             ))
             db.execute("CREATE VIRTUAL TABLE keywords USING fts5(body, heading, source)")
@@ -119,21 +125,36 @@ def build_index(root: Path, path: Path, embedder: Embedder) -> dict:
     finally:
         staging.unlink(missing_ok=True)
 
-    return {"documents": len({chunk.source for chunk in chunks}), "chunks": len(chunks)}
+    return {"documents": len(kinds), "chunks": len(chunks)}
 
 
 def index_status(path: Path) -> dict:
     with closing(_open_existing(path)) as db:
         name, revision, dimension = db.execute("SELECT name, revision, dimension FROM model").fetchone()
-        sources = db.execute("SELECT source, count(*) FROM chunks GROUP BY source").fetchall()
-    scopes = Counter(source.partition("/")[0] for source, _ in sources)
+        sources = db.execute("SELECT source, kind, count(*) FROM chunks GROUP BY source, kind").fetchall()
+    scopes = Counter(source.partition("/")[0] for source, _, _ in sources)
+    kinds = Counter(kind for _, kind, _ in sources)
     return {"schema": SCHEMA_VERSION, "model": name, "revision": revision, "dimension": dimension,
-            "documents": len(sources), "chunks": sum(count for _, count in sources),
-            "scopes": dict(sorted(scopes.items()))}
+            "documents": len(sources), "chunks": sum(count for _, _, count in sources),
+            "scopes": dict(sorted(scopes.items())), "kinds": dict(sorted(kinds.items()))}
+
+
+def source_manifest(path: Path) -> dict[str, list[str]]:
+    manifest = {}
+    with closing(_open_existing(path)) as db:
+        rows = db.execute("""SELECT source, kind, title, section, start_line, end_line, text
+                             FROM chunks ORDER BY source, id""")
+        for source, chunks in groupby(rows, key=lambda row: row[0]):
+            digest = sha256()
+            for _, kind, *content in chunks:
+                digest.update(json.dumps(content).encode())
+                digest.update(b"\n")
+            manifest[source] = [kind, digest.hexdigest()]
+    return manifest
 
 
 def search_index(path: Path, query: str, top_k: int, embedder: Embedder, *,
-                 scope: str | None = None, mode: SearchMode = "hybrid") -> list[dict]:
+                 scope: str | None = None, mode: SearchMode = "hybrid", kind: str = "guide") -> list[dict]:
     query = query.strip()
     if not query:
         raise ValueError("query must not be empty")
@@ -141,13 +162,15 @@ def search_index(path: Path, query: str, top_k: int, embedder: Embedder, *,
         raise ValueError("top-k must be at least 1")
     if mode not in {"hybrid", "keyword", "semantic"}:
         raise ValueError("unknown search mode")
-    clause, params = "1", ()
+    if kind != "all" and kind not in DOCUMENT_KINDS:
+        raise ValueError("unknown document kind")
+    clause, params = ("1", ()) if kind == "all" else ("c.kind = ?", (kind,))
     if scope is not None:
         scope = scope.strip().rstrip("/")
         if not scope or any(part in {"", ".", ".."} for part in scope.split("/")):
             raise ValueError("scope must be a path relative to the indexed directory")
-        clause = "(c.source = ? OR substr(c.source, 1, ?) = ?)"
-        params = (scope, len(scope) + 1, scope + "/")
+        clause += " AND (c.source = ? OR substr(c.source, 1, ?) = ?)"
+        params += (scope, len(scope) + 1, scope + "/")
     limit = max(top_k * 4, 40)
     with closing(_open_existing(path)) as db:
         model, revision, dimension = db.execute("SELECT name, revision, dimension FROM model").fetchone()
@@ -157,12 +180,12 @@ def search_index(path: Path, query: str, top_k: int, embedder: Embedder, *,
         keyword_rows, semantic_rows = [], []
         expression = match_expression(query) if mode != "semantic" else ""
         if expression:
-            keyword_rows = db.execute(f"""SELECT c.id, c.source, c.title, c.section, c.table_header,
+            keyword_rows = db.execute(f"""SELECT c.id, c.source, c.kind, c.title, c.section, c.table_header,
                 c.start_line, c.end_line, c.text FROM keywords JOIN chunks c ON c.id = keywords.rowid
                 WHERE keywords MATCH ? AND {clause} ORDER BY bm25(keywords, 5.0, 1.6, 0.8), c.id LIMIT ?""",
                 (expression, *params, limit)).fetchall()
         if mode != "keyword":
-            semantic_rows = db.execute(f"""SELECT id, source, title, section, table_header,
+            semantic_rows = db.execute(f"""SELECT id, source, kind, title, section, table_header,
                 start_line, end_line, text, vector FROM chunks c WHERE {clause} ORDER BY id""", params).fetchall()
 
     query_terms = technical_terms(query)
@@ -197,3 +220,28 @@ def search_index(path: Path, query: str, top_k: int, embedder: Embedder, *,
         scores[item_id] = scores.get(item_id, 0) + 1 / (RANK_OFFSET + rank) + 0.025 * exact.get(item_id, 0)
 
     return [{**items[i], "score": scores[i]} for i in sorted(scores, key=lambda i: (-scores[i], i))[:top_k]]
+
+
+def assess_candidates(query: str, hits: list[dict], *, live: bool = False) -> dict:
+    # Rank is relative: lexical corroboration is a conservative signal, not a proof.
+    query_terms = set(terms(query, query=True))
+    identifiers = technical_terms(query)
+    corroborated = []
+    for hit in hits:
+        context = searchable_text("\n".join(filter(None, (hit["section"], hit["text"]))))
+        overlap = query_terms & set(terms(context, query=True))
+        exact = identifiers & technical_terms(context)
+        # Count independent matches, not all the overlapping n-grams of one phrase.
+        matching = sorted((bytes.fromhex(term[1:]).decode() for term in overlap),
+                          key=lambda word: (-len(word), word))
+        distinct = []
+        for term in matching:
+            if len(term) > 1 and not any(term in other or other in term or
+                                        (min(len(term), len(other)) >= 2 and
+                                         (term[-2:] == other[:2] or other[-2:] == term[:2]))
+                                        for other in distinct):
+                distinct.append(term)
+        if exact or len(distinct) >= 2:
+            corroborated.append(hit)
+    state = "live_required" if live else ("candidates" if corroborated else "insufficient")
+    return {"query": query, "status": state, "matches": corroborated}
