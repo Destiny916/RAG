@@ -73,7 +73,43 @@ Agent 可加 `--evidence --json`，查看 `status` 和 `matches`。有独立词�
 
 全局 `AGENTS.md` 让 Codex 在作答过程中根据当前上下文判断是否查库、是否有收录候选。有候选才核对现有知识并提交草稿。通用问答不自动加载 RAG，也无需保存跳过记录。
 
-用户级 Stop 默认放行。需要强制复核兜底的项目，可在本仓库的 `.rag/stop-workspaces.json` 中配置绝对目录列表，例如 `["/path/to/project"]`。列出的目录及其子目录最多触发一次续作；脚本不读取会话文件。该选项会让这些项目中的通用问题也走一次兜底复核。
+### 配置 Hook
+
+1. 在 RAG 仓库根目录运行 `pwd -P`，记下仓库的绝对路径。下面以 `/path/to/RAG` 为例，使用时替换为实际路径。Hook 需要 `python3`（Python 3.11 或更新版本），无需激活虚拟环境或加载检索模型。
+2. 编辑用户级 `~/.codex/hooks.json`（设置了 `CODEX_HOME` 时用该目录下的 `hooks.json`）。文件不存在时可使用下面的完整示例；已有配置时，只把 RAG 的条目追加到 `hooks.Stop` 数组，保留其他 Hook。路径含空格时，也可以直接使用示例中的引号写法。
+
+   ```json
+   {
+     "hooks": {
+       "Stop": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "python3 \"/path/to/RAG/scripts/rag_stop.py\"",
+               "timeout": 5,
+               "statusMessage": "Checking whether this turn has reusable RAG knowledge"
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+3. 在 **RAG 仓库**下创建 `.rag/stop-workspaces.json`（如有需要先执行 `mkdir -p .rag`）。填入要启用复核的项目绝对路径，例如：
+
+   ```json
+   ["/path/to/project-a", "/path/to/project-b"]
+   ```
+
+4. 重新打开 Codex 会话。在 Codex CLI 中运行 `/hooks`，确认 `Stop` 列出了上述命令；若显示待信任，核对脚本路径后在该菜单中信任它。若 Hook 未列出，检查配置路径和 JSON 语法，再运行 `codex features list` 确认 `hooks` 已启用。被关闭时，可在同一配置目录的 `config.toml` 的 `[features]` 下设置 `hooks = true`。
+
+可以先在任意目录运行 `printf '{}\n' | python3 "/path/to/RAG/scripts/rag_stop.py"`，预期无输出、退出码为 `0`，用于确认脚本可运行。随后在白名单内打开 Codex 发一条普通请求，确认本轮结束时出现一次收录复核；在白名单外再试一轮，应直接结束。
+
+白名单涵盖列出的目录及其子目录，其中的通用问题也会走一次兜底复核；同一轮最多触发一次续作，脚本不读取会话文件。白名单缺失或为 `[]` 时默认放行。要停用某个项目，从白名单移除对应路径；要取消注册，只删除 `hooks.Stop` 中的 RAG 条目。
+
+### 查看和发布草稿
 
 决定和草稿都保存在中央仓库的 `.rag/turn-reviews/`，不会被索引。查看待审事项、预览，以及用户明确批准后发布的命令如下：
 
