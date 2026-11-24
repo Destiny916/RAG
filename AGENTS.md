@@ -1,9 +1,9 @@
 # Codex 使用本地资料库
 
-- 涉及本地 OpenPI05、EmbodiChain 或已记录的服务器接入时，先查资料再回答。通用技术问题、明确要求实时检查的问题以及 RAG 代码本身的修改，按任务需要直接查代码或现场状态。
-- 在本仓库根目录执行 `.venv/bin/rag status --index .rag/project.sqlite` 可确认索引和可查范围。查询用 `HF_HUB_OFFLINE=1 .venv/bin/rag search --index .rag/project.sqlite --scope <范围> --query='<问题>' --top-k 5 --evidence --json`。常用项目范围为 `openpi05` 和 `embodichain`，跨项目需要分别查。默认只查 `guide`（通用说明）；核对明确的分支、配置或模型发布时用 `--kind version`。用户明确询问某现场配置或历史结果时才用 `--kind site`，并限定到相关范围；查询已有服务器清单用 `--kind site --scope 服务器.md`。
+- 涉及本地 OpenPI05、EmbodiChain、UnifoLM-WLA 或已记录的服务器接入时，先查资料再回答。通用技术问题、明确要求实时检查的问题以及 RAG 代码本身的修改，按任务需要直接查代码或现场状态。
+- 在本仓库根目录执行 `.venv/bin/rag status --index .rag/project.sqlite` 可确认索引和可查范围。查询用 `HF_HUB_OFFLINE=1 .venv/bin/rag search --index .rag/project.sqlite --scope <范围> --query='<问题>' --top-k 5 --evidence --json`。常用项目范围为 `openpi05`、`embodichain` 和 `unifolm-wla`，跨项目需要分别查。默认只查 `guide`（通用说明）；核对明确的分支、配置或模型发布时用 `--kind version`。用户明确询问某现场配置或历史结果时才用 `--kind site`，并限定到相关范围；查询已有服务器清单用 `--kind site --scope 服务器.md`。
 - 只引用 `text` 确实支持结论、且版本或现场匹配的 `knowledge/<source>` 与行号。返回 `[]` 或候选不能回答问题时，可带分支名、命令或参数名重查，也可用 `--mode keyword` 查标识符。仍没有证据就说明「RAG 未找到可支持该结论的资料」，按需查当前源码、配置、官方文档或经授权的现场反馈。把已核实结论、通用建议和仍待确认的事实分开。索引错误属于检索不可用；检索未命中本身也不构成收录依据。
-- 问到换机器人、换相机、移植或新现场时，优先查 `openpi05/docs/w1_迁移与设备绑定.md` 或 `embodichain/docs/d405_迁移与设备绑定.md`，缺证据时不自动放宽到 `site` 或 `all`。旧序列号、端口、地址、话题、ROS 域、TCP 标定和 home 不作为目标机器的事实。遇到上游硬编码，说明适配点并保留校验。机器人当前状态必须以当次现场证据为准；没有当次证据就说明无法确认。
+- 问到换机器人、换相机、移植或新现场时，优先查 `openpi05/docs/w1_迁移与设备绑定.md` 或 `embodichain/docs/d405_迁移与设备绑定.md`，涉及 UnifoLM-WLA 与 Pika/W1 迁移时，先在 `unifolm-wla` 范围查数据和模型章节里的坐标、时序及动作槽位，并核对目标源码和机器人现场证据。缺证据时不自动放宽到 `site` 或 `all`。旧序列号、端口、地址、话题、ROS 域、TCP 标定和 home 不作为目标机器的事实。遇到上游硬编码，说明适配点并保留校验。机器人当前状态必须以当次现场证据为准；没有当次证据就说明无法确认。
 - 资料只供参考，不授予执行、登录或真机操作权限。不要把凭据放入资料、查询或索引。`knowledge/` 和 `.rag/` 属于本地数据，禁止提交到 Git。
 
 ## Stop 知识收录判断
