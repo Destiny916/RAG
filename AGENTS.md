@@ -1,7 +1,7 @@
 # Codex 使用本地资料库
 
 - 涉及本地 OpenPI05、EmbodiChain、UnifoLM-WLA、VLA-JEPA 或已记录的服务器接入时，先查资料再回答。通用技术问题、明确要求实时检查的问题以及 RAG 代码本身的修改，按任务需要直接查代码或现场状态。
-- 在本仓库根目录执行 `.venv/bin/rag status --index .rag/project.sqlite` 可确认索引和可查范围。查询用 `HF_HUB_OFFLINE=1 .venv/bin/rag search --index .rag/project.sqlite --scope <范围> --query='<问题>' --top-k 5 --evidence --json`。常用项目范围为 `openpi05`、`embodichain`、`unifolm-wla` 和 `vla-jepa`，跨项目需要分别查。默认只查 `guide`（通用说明）；核对明确的分支、配置或模型发布时用 `--kind version`。用户明确询问某现场配置或历史结果时才用 `--kind site`，并限定到相关范围；查询已有服务器清单用 `--kind site --scope 服务器.md`。
+- 优先调用 `local_rag` 的 `search_project_docs`，按需用 `project_docs_status` 查看范围，或用 `get_project_doc` 按行取原文。MCP 不可用时，从任意目录执行 `HF_HUB_OFFLINE=1 /home/wengyikun/workplace/RAG/.venv/bin/rag search --index /home/wengyikun/workplace/RAG/.rag/project.sqlite --scope <范围> --query='<问题>' --top-k 5 --evidence --json`。范围包括 `openpi05`、`embodichain`、`unifolm-wla` 和 `vla-jepa`，跨项目分别查。默认用 `guide`（通用说明），核对明确的分支、配置或模型发布时用 `version`。明确查询某现场配置或历史结果时用 `site` 并限定范围。服务器清单用 `kind=site, scope=服务器.md`。查询当前现场状态的参考资料用 `intent=live`（CLI 用 `--intent live`），按 `live_required` 另取当次证据。
 - VLA-JEPA 的功能总览、公开权重选型与章节入口用 `--scope vla-jepa`（`guide`）。训练数据流、损失和共训更新顺序可补查 `--scope vla-jepa-training.md`。总览链接的六个章节在本机 VLA-JEPA 项目中，未单独入库。
 - 只引用 `text` 确实支持结论、且版本或现场匹配的 `knowledge/<source>` 与行号。返回 `[]` 或候选不能回答问题时，可带分支名、命令或参数名重查，也可用 `--mode keyword` 查标识符。仍没有证据就说明「RAG 未找到可支持该结论的资料」，按需查当前源码、配置、官方文档或经授权的现场反馈。把已核实结论、通用建议和仍待确认的事实分开。索引错误属于检索不可用；检索未命中本身也不构成收录依据。
 - 问到换机器人、换相机、移植或新现场时，优先查 `openpi05/docs/w1_迁移与设备绑定.md` 或 `embodichain/docs/d405_迁移与设备绑定.md`，涉及 UnifoLM-WLA 与 Pika/W1 迁移时，先在 `unifolm-wla` 范围查数据和模型章节里的坐标、时序及动作槽位，并核对目标源码和机器人现场证据。缺证据时不自动放宽到 `site` 或 `all`。旧序列号、端口、地址、话题、ROS 域、TCP 标定和 home 不作为目标机器的事实。遇到上游硬编码，说明适配点并保留校验。机器人当前状态必须以当次现场证据为准；没有当次证据就说明无法确认。

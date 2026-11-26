@@ -67,7 +67,42 @@ Agent 可加 `--evidence --json`，查看 `status` 和 `matches`。有独立词�
 "project/docs/previous-deployment.md" = "site"
 ```
 
-如果以后接入 MCP，可以把同一检索函数暴露为 `search_project_docs(query, scope, kind, top_k)`，在工具描述中写明它能查的资料范围、适合调用的场景和返回的出处。Codex 连接后可根据工具描述和项目指令决定是否调用；注册工具本身不会保证每次都查。对必须检索的业务流程，由调用方先运行检索，再把结果交给模型。本仓库目前提供的是 CLI。
+### 在本机 Codex 会话中启用 MCP
+
+在仓库根目录执行。用户级配置可供同一台机器上、不同工作目录的本地 Codex 会话使用。
+
+```bash
+.venv/bin/pip install -e '.[mcp]'
+codex mcp add local_rag --env HF_HUB_OFFLINE=1 -- \
+  "$PWD/.venv/bin/python" -m local_rag.mcp_server \
+  --index "$PWD/.rag/project.sqlite" --knowledge "$PWD/knowledge"
+codex mcp get local_rag
+```
+
+- `search_project_docs` 按必填的 `scope` 查片段，默认使用 `guide` 和混合检索。带 `intent=live` 的查询返回 `live_required`。
+- `get_project_doc` 用候选的 `source` 和 `kind` 按行取原文。索引和原文变动导致行号不一致时，提示重建索引。
+- `project_docs_status` 返回当前可查范围和索引规模。
+
+每个 MCP 进程在首次用到向量检索时加载 CPU 模型，后续调用复用模型。关键词检索、查看状态和按行读取都不需要加载模型。每次搜索读取当前索引，发布新索引后后续调用可直接看到。
+
+### 每轮开始时提醒 Codex 判断是否查库
+
+在用户级 `~/.codex/hooks.json` 的 `hooks.UserPromptSubmit` 数组追加下面的条目。将路径换成本机绝对路径，已有条目一并保留。
+
+```json
+{
+  "hooks": [
+    {
+      "type": "command",
+      "command": "python3 /path/to/RAG/scripts/rag_prompt.py",
+      "timeout": 3,
+      "statusMessage": "Checking local RAG scope"
+    }
+  ]
+}
+```
+
+在 Codex 桌面端的 **Settings → Hooks** 或 CLI 的 `/hooks` 中检查并信任新条目。每次提交用户消息时，Hook 提醒 agent 按本轮问题、工作目录和前文判断范围。项目相关问题先走 MCP，通用问题跳过检索。命令只输出固定提示，读取任意长度的 Hook 输入时不会分析或保存用户消息。CLI 查询可作为回退。
 
 ## Codex Stop 收录试点
 

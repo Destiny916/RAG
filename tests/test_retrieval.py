@@ -10,7 +10,7 @@ import pytest
 from local_rag import intake, publication, reviews
 from local_rag.documents import CHUNK_CHARS, split_document
 from local_rag.embedding import E5Embedder
-from local_rag.index import build_index, index_status, search_index
+from local_rag.index import build_index, index_status, read_indexed_source, search_index
 
 
 class StubEmbedder:
@@ -38,6 +38,22 @@ def sample_docs(tmp_path):
     }.items():
         (root / name).write_text(text, encoding="utf-8")
     return root
+
+
+def test_read_source_requires_indexed_kind_and_current_lines(tmp_path, sample_docs):
+    index = tmp_path / "index.sqlite"
+    build_index(sample_docs, index, StubEmbedder())
+    result = read_indexed_source(index, sample_docs, "target.md", "guide", start_line=3, end_line=5)
+    assert result["text"] == "一串钥匙放在窗边的方盒里。"
+    assert result["start_line"] == result["end_line"] == 3
+    with pytest.raises(ValueError, match="requested document kind"):
+        read_indexed_source(index, sample_docs, "target.md", "site", start_line=1, end_line=1)
+    with pytest.raises(ValueError, match="relative"):
+        read_indexed_source(index, sample_docs, "../target.md", "guide", start_line=1, end_line=1)
+    source = sample_docs / "target.md"
+    source.write_text("\n" + source.read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(ValueError, match="source changed since indexing"):
+        read_indexed_source(index, sample_docs, "target.md", "guide", start_line=3, end_line=3)
 
 
 def test_markdown_preserves_source_lines():

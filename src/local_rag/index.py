@@ -11,7 +11,9 @@ from typing import Literal
 
 import numpy as np
 
-from .documents import DOCUMENT_KINDS, document_kind, read_chunks, read_kind_rules, searchable_text
+from .documents import (
+    DOCUMENT_KINDS, document_kind, read_chunks, read_kind_rules, searchable_text, split_document,
+)
 from .embedding import Embedder
 from .lexical import match_expression, technical_terms, terms
 
@@ -151,6 +153,40 @@ def source_manifest(path: Path) -> dict[str, list[str]]:
                 digest.update(b"\n")
             manifest[source] = [kind, digest.hexdigest()]
     return manifest
+
+
+def read_indexed_source(path: Path, root: Path, source: str, kind: str, *,
+                        start_line: int, end_line: int) -> dict:
+    if "\\" in source or any(part in {"", ".", ".."} for part in source.split("/")):
+        raise ValueError("source must be a path relative to the knowledge directory")
+    if kind not in DOCUMENT_KINDS:
+        raise ValueError("unknown document kind")
+    if not 1 <= start_line <= end_line < start_line + 60:
+        raise ValueError("request between 1 and 60 lines, with 1-based numbering")
+    with closing(_open_existing(path)) as db:
+        indexed = db.execute(
+            "SELECT start_line, end_line, text FROM chunks WHERE source = ? AND kind = ? ORDER BY id",
+            (source, kind),
+        ).fetchall()
+    if not indexed:
+        raise ValueError("source is not in the requested document kind")
+
+    root = root.resolve(strict=True)
+    file = root / source
+    if file.resolve(strict=True) != file or not file.is_file():
+        raise ValueError("source is not a regular file in the knowledge directory")
+    text = file.read_text(encoding="utf-8-sig")
+    current = [(chunk.start_line, chunk.end_line, chunk.text) for chunk in split_document(source, text)]
+    if current != indexed or document_kind(source, read_kind_rules(root)) != kind:
+        raise ValueError("source changed since indexing; rebuild the index before citing it")
+    lines = text.removesuffix("\n").split("\n")
+    if start_line > len(lines):
+        raise ValueError("start_line is past the end of the source")
+    end_line = min(end_line, len(lines))
+    excerpt = "\n".join(lines[start_line - 1:end_line])
+    if len(excerpt) > 12000:
+        raise ValueError("excerpt exceeds 12000 characters; narrow the line range or use the search fragment")
+    return {"source": source, "kind": kind, "start_line": start_line, "end_line": end_line, "text": excerpt}
 
 
 def search_index(path: Path, query: str, top_k: int, embedder: Embedder, *,
